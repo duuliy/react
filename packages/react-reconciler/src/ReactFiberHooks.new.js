@@ -966,9 +966,47 @@ function readFromUnsubcribedMutableSource<Source, Snapshot>(
     // but there's nothing we can do about that (short of throwing here and refusing to continue the render).
     markSourceAsDirty(source);
 
+    // Intentioally throw an error to force React to retry synchronously. During
+    // the synchronous retry, it will block interleaved mutations, so we should
+    // get a consistent read. Therefore, the following error should never be
+    // visible to the user.
+    //
+    // If it were to become visible to the user, it suggests one of two things:
+    // a bug in React, or (more likely), a mutation during the render phase that
+    // caused the second re-render attempt to be different from the first.
+    //
+    // We know it's the second case if the logs are currently disabled. So in
+    // dev, we can present a more accurate error message.
+    if (__DEV__) {
+      // eslint-disable-next-line react-internal/no-production-logging
+      if (console.log.__reactDisabledLog) {
+        // If the logs are disabled, this is the dev-only double render. This is
+        // only reachable if there was a mutation during render. Show a helpful
+        // error message.
+        //
+        // Something interesting to note: because we only double render in
+        // development, this error will never happen during production. This is
+        // actually true of all errors that occur during a double render,
+        // because if the first render had thrown, we would have exited the
+        // begin phase without double rendering. We should consider suppressing
+        // any error from a double render (with a warning) to more closely match
+        // the production behavior.
+        const componentName = getComponentName(currentlyRenderingFiber.type);
+        invariant(
+          false,
+          'A mutable source was mutated while the %s component was rendering. ' +
+            'This is not supported. Move any mutations into event handlers ' +
+            'or effects.',
+          componentName,
+        );
+      }
+    }
+
+    // We expect this error not to be thrown during the synchronous retry,
+    // because we blocked interleaved mutations.
     invariant(
       false,
-      'Cannot read from mutable source during the current render without tearing. This is a bug in React. Please file an issue.',
+      'Cannot read from mutable source during the current render without tearing. This may be a bug in React. Please file an issue.',
     );
   }
 }
@@ -1342,7 +1380,7 @@ function updateEffectImpl(fiberFlags, hookFlags, create, deps): void {
     if (nextDeps !== null) {
       const prevDeps = prevEffect.deps;
       if (areHookInputsEqual(nextDeps, prevDeps)) {
-        pushEffect(hookFlags, create, destroy, nextDeps);
+        hook.memoizedState = pushEffect(hookFlags, create, destroy, nextDeps);
         return;
       }
     }
